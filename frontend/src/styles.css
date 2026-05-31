@@ -1,0 +1,29 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #08090b;
+  color: #f8fafc;
+}
+
+.glass {
+  background: rgba(24, 27, 32, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(18px);
+}
+
+.premium-bg {
+  background:
+    radial-gradient(circle at 20% 0%, rgba(229, 9, 20, 0.28), transparent 28rem),
+    linear-gradient(135deg, #08090b 0%, #17191f 52%, #0d0e11 100%);
+}
+
+.skeleton {
+  animation: pulse 1.6s ease-in-out infinite;
+}
