@@ -208,7 +208,7 @@ const roleMenus = {
   ],
   responsable: [
     ['Profil', ['profil']],
-    ['Operations', ['responsable-overview', 'demandes-coach', 'planning', 'clients-actifs']],
+    ['Operations', ['responsable-overview', 'demandes-coach', 'demandes-conges', 'planning', 'clients-actifs']],
     ['Equipe', ['coachs-jour', 'calendrier']],
     ['Acces', ['qr', 'notifications']],
   ],
@@ -624,12 +624,17 @@ function Workspace({ user, onLogout }) {
   const [openMenus, setOpenMenus] = useState({ Profil: true, 'Vue generale': true, 'Mon espace': true, Operations: true, Club: true });
   const [actionNotice, setActionNotice] = useState('');
   const [internalNotifications, setInternalNotifications] = useState([]);
+  const [leaveRequests, setLeaveRequests] = useState(() => JSON.parse(localStorage.getItem('wifak_leave_requests') || '[]'));
 
   const roleHint = (roles.find((r) => r.id === role) || {}).hint || '';
 
   useEffect(() => {
     setSection(defaultSection);
   }, [defaultSection]);
+
+  useEffect(() => {
+    localStorage.setItem('wifak_leave_requests', JSON.stringify(leaveRequests));
+  }, [leaveRequests]);
 
   const pushInternalNotification = (title, message) => {
     const notification = {
@@ -640,6 +645,20 @@ function Workspace({ user, onLogout }) {
     };
     setInternalNotifications((items) => [notification, ...items]);
     return notification;
+  };
+
+  const addLeaveRequest = (request) => {
+    setLeaveRequests((items) => [request, ...items]);
+    pushInternalNotification('Demande de conge', `${request.coach} demande un conge du ${request.start_date} au ${request.end_date}.`);
+  };
+
+  const decideLeaveRequest = (request, statusLabel) => {
+    setLeaveRequests((items) => items.map((item) => (
+      item.id === request.id
+        ? { ...item, status: statusLabel, decided_at: new Date().toISOString() }
+        : item
+    )));
+    pushInternalNotification('Reponse conge', `La demande de ${request.coach} du ${request.start_date} au ${request.end_date} est ${statusLabel.toLowerCase()}.`);
   };
 
   const sendRoleNotification = () => {
@@ -704,17 +723,19 @@ function Workspace({ user, onLogout }) {
           user={user}
           internalNotifications={internalNotifications}
           onInternalNotify={pushInternalNotification}
+          leaveRequests={leaveRequests}
+          onLeaveRequest={addLeaveRequest}
+          onLeaveDecision={decideLeaveRequest}
         />
       </main>
     </div>
   );
 }
 
-function Dashboard({ role, section, user, internalNotifications = [], onInternalNotify }) {
+function Dashboard({ role, section, user, internalNotifications = [], onInternalNotify, leaveRequests = [], onLeaveRequest, onLeaveDecision }) {
   const [data, setData] = useState({ stats: null, sessions: [], members: [], coaches: [], products: [], bonuses: [], notifications: [], payments: [] });
   const [localBonuses, setLocalBonuses] = useState([]);
   const [localEnrollments, setLocalEnrollments] = useState([]);
-  const [localLeaveRequests, setLocalLeaveRequests] = useState([]);
   const [loading, setLoading] = useState(true);
 
   const addCoachBonus = (label, amount, period = 'Aujourd hui') => {
@@ -783,14 +804,12 @@ function Dashboard({ role, section, user, internalNotifications = [], onInternal
   if (section === 'notifications') return <NotificationsPanel notifications={[...internalNotifications, ...(data.notifications || [])]} />;
   if (section === 'chat') return <ChatPanel onInternalNotify={onInternalNotify} />;
   if (section === 'programmes' && role === 'coach') return <CoachProgramsPanel onInternalNotify={onInternalNotify} onCoachBonus={addCoachBonus} />;
-  if (section === 'conges' && role === 'coach') return <CoachLeavePanel user={user} requests={localLeaveRequests} onRequest={(request) => {
-    setLocalLeaveRequests((items) => [request, ...items]);
-    onInternalNotify?.('Demande de conge', `${user.name || user.email} demande un conge du ${request.start_date} au ${request.end_date}.`);
-  }} />;
+  if (section === 'conges' && role === 'coach') return <CoachLeavePanel user={user} requests={leaveRequests.filter((request) => request.coach_email === user.email || request.coach === (user.name || user.email))} onRequest={onLeaveRequest} />;
   if (section === 'clients' && role === 'coach') return <CoachClientsPanel enrollments={enrollments} sessions={data.sessions} />;
   if (['bonus', 'inscriptions'].includes(section) && role === 'coach') return <CoachBonusPanel bonuses={[...localBonuses, ...(data.bonuses || [])]} enrollments={enrollments} sessions={data.sessions} />;
   if (['planning', 'calendrier'].includes(section)) return <Schedule sessions={data.sessions} role={role} user={user} coaches={data.coaches} onInternalNotify={onInternalNotify} onCoachBonus={addCoachBonus} onClientEnroll={(enrollment) => setLocalEnrollments((items) => [enrollment, ...items])} />;
   if (section === 'demandes-coach' && role === 'responsable') return <CoachRequests initialCoaches={data.coaches} onInternalNotify={onInternalNotify} />;
+  if (section === 'demandes-conges' && role === 'responsable') return <ResponsableLeaveRequests requests={leaveRequests} onDecision={onLeaveDecision} />;
   if (role === 'admin') return <AdminDashboard section={section} data={data} />;
   if (role === 'coach') return <CoachDashboard data={{ ...data, enrollments, bonuses: [...localBonuses, ...(data.bonuses || [])] }} />;
   if (role === 'responsable') return <ResponsableDashboard data={data} />;
@@ -944,6 +963,7 @@ function CoachLeavePanel({ user, requests = [], onRequest }) {
       days: durationDays,
       id: `leave-${Date.now()}`,
       coach: user.name || user.email,
+      coach_email: user.email,
       status: 'En attente',
       created_at: new Date().toISOString(),
     };
@@ -954,7 +974,7 @@ function CoachLeavePanel({ user, requests = [], onRequest }) {
 
   const rows = requests.map((request) => [
     `${request.start_date} -> ${request.end_date}`,
-    request.type,
+    `${request.type} - ${request.days || ''} jours`,
     request.status,
   ]);
 
@@ -966,13 +986,68 @@ function CoachLeavePanel({ user, requests = [], onRequest }) {
           <label>Fin<input type="date" min={form.start_date || minLeaveDate} value={form.end_date} onChange={(e) => setForm({ ...form, end_date: e.target.value })} /></label>
           <label>Type<select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}><option value="repos">Repos</option><option value="maladie">Maladie</option><option value="urgence">Urgence</option><option value="vacances">Vacances</option></select></label>
         </div>
-        <p className="help-text">Maximum 18 jours. Les dates avant juin 2026 sont bloquees.</p>
         <label>Motif<textarea value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} placeholder="Expliquez la demande..." /></label>
         <button className="primary-action red">Envoyer demande</button>
         {notice && <p className="form-status">{notice}</p>}
       </form>
       <Rows rows={rows} empty="Aucune demande de conge envoyee." />
     </Panel>
+  );
+}
+
+function ResponsableLeaveRequests({ requests = [], onDecision }) {
+  const [notice, setNotice] = useState('');
+
+  const decide = (request, statusLabel) => {
+    onDecision?.(request, statusLabel);
+    setNotice(statusLabel === 'Acceptee' ? 'Demande de conge acceptee.' : 'Demande de conge refusee.');
+  };
+
+  return (
+    <section className="panel premium-panel coach-requests">
+      <div className="panel-heading"><span>Demandes de conges</span></div>
+      <div className="panel-body">
+        {notice && <p className="inline-status action-notice">{notice}</p>}
+        <div className="table-scroll">
+          <table className="table table-dark table-hover align-middle data-table coach-request-table">
+            <thead>
+              <tr>
+                <th>Coach</th>
+                <th>Periode</th>
+                <th>Type</th>
+                <th>Motif</th>
+                <th>Statut</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {requests.map((request) => {
+                const statusClass = request.status === 'Acceptee' ? 'approved' : request.status === 'Refusee' ? 'rejected' : 'pending';
+                const isClosed = ['Acceptee', 'Refusee'].includes(request.status);
+                return (
+                  <tr key={request.id}>
+                    <td><strong>{request.coach}</strong><span>{request.coach_email || 'Coach'}</span></td>
+                    <td>{request.start_date} - {request.end_date}<span>{request.days} jours</span></td>
+                    <td>{request.type}</td>
+                    <td>{request.reason || 'Sans motif'}</td>
+                    <td><span className={`status-badge status-${statusClass}`}>{request.status}</span></td>
+                    <td>
+                      <div className="request-actions">
+                        <button disabled={isClosed} onClick={() => decide(request, 'Acceptee')}>Accepter</button>
+                        <button disabled={isClosed} onClick={() => decide(request, 'Refusee')}>Refuser</button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+              {!requests.length && (
+                <tr><td colSpan="6">Aucune demande de conge.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -1961,6 +2036,7 @@ function labelFor(key) {
     chat: 'Chat interne',
     'responsable-overview': 'Dashboard Responsable',
     'demandes-coach': 'Demandes de Coach',
+    'demandes-conges': 'Demandes de Conges',
     'clients-actifs': 'Clients actifs',
     'coachs-jour': 'Coachs du jour',
     qr: 'QR Code',
