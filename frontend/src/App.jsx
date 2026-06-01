@@ -908,6 +908,7 @@ function CoachBonusPanel({ bonuses = [], enrollments = [], sessions = [], compac
 }
 
 function CoachLeavePanel({ user, requests = [], onRequest }) {
+  const minLeaveDate = '2026-06-01';
   const [form, setForm] = useState({
     start_date: '',
     end_date: '',
@@ -922,8 +923,25 @@ function CoachLeavePanel({ user, requests = [], onRequest }) {
       setNotice('Choisissez la date debut et fin du conge.');
       return;
     }
+    const start = new Date(`${form.start_date}T00:00:00`);
+    const end = new Date(`${form.end_date}T00:00:00`);
+    const minDate = new Date(`${minLeaveDate}T00:00:00`);
+    const durationDays = Math.floor((end - start) / 86400000) + 1;
+    if (start < minDate || end < minDate) {
+      setNotice('Les conges avant juin 2026 ne sont pas acceptes.');
+      return;
+    }
+    if (end < start) {
+      setNotice('La date de fin doit etre apres la date de debut.');
+      return;
+    }
+    if (durationDays > 18) {
+      setNotice('La demande de conge ne peut pas depasser 18 jours.');
+      return;
+    }
     const request = {
       ...form,
+      days: durationDays,
       id: `leave-${Date.now()}`,
       coach: user.name || user.email,
       status: 'En attente',
@@ -944,10 +962,11 @@ function CoachLeavePanel({ user, requests = [], onRequest }) {
     <Panel title="Demande de conge">
       <form className="leave-form" onSubmit={submitLeave}>
         <div className="form-grid">
-          <label>Debut<input type="date" value={form.start_date} onChange={(e) => setForm({ ...form, start_date: e.target.value })} /></label>
-          <label>Fin<input type="date" value={form.end_date} onChange={(e) => setForm({ ...form, end_date: e.target.value })} /></label>
+          <label>Debut<input type="date" min={minLeaveDate} value={form.start_date} onChange={(e) => setForm({ ...form, start_date: e.target.value })} /></label>
+          <label>Fin<input type="date" min={form.start_date || minLeaveDate} value={form.end_date} onChange={(e) => setForm({ ...form, end_date: e.target.value })} /></label>
           <label>Type<select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}><option value="repos">Repos</option><option value="maladie">Maladie</option><option value="urgence">Urgence</option><option value="vacances">Vacances</option></select></label>
         </div>
+        <p className="help-text">Maximum 18 jours. Les dates avant juin 2026 sont bloquees.</p>
         <label>Motif<textarea value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} placeholder="Expliquez la demande..." /></label>
         <button className="primary-action red">Envoyer demande</button>
         {notice && <p className="form-status">{notice}</p>}
