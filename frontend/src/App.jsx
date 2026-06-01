@@ -201,7 +201,7 @@ const roleMenus = {
   coach: [
     ['Profil', ['profil']],
     ['Contrat', ['contrat']],
-    ['Mon espace', ['coach-overview', 'planning', 'clients']],
+    ['Mon espace', ['coach-overview', 'planning', 'clients', 'conges']],
     ['Programmes', ['programmes']],
     ['Primes', ['bonus', 'inscriptions']],
     ['Communication', ['notifications', 'chat']],
@@ -714,6 +714,7 @@ function Dashboard({ role, section, user, internalNotifications = [], onInternal
   const [data, setData] = useState({ stats: null, sessions: [], members: [], coaches: [], products: [], bonuses: [], notifications: [], payments: [] });
   const [localBonuses, setLocalBonuses] = useState([]);
   const [localEnrollments, setLocalEnrollments] = useState([]);
+  const [localLeaveRequests, setLocalLeaveRequests] = useState([]);
   const [loading, setLoading] = useState(true);
 
   const addCoachBonus = (label, amount, period = 'Aujourd hui') => {
@@ -782,10 +783,14 @@ function Dashboard({ role, section, user, internalNotifications = [], onInternal
   if (section === 'notifications') return <NotificationsPanel notifications={[...internalNotifications, ...(data.notifications || [])]} />;
   if (section === 'chat') return <ChatPanel onInternalNotify={onInternalNotify} />;
   if (section === 'programmes' && role === 'coach') return <CoachProgramsPanel onInternalNotify={onInternalNotify} onCoachBonus={addCoachBonus} />;
+  if (section === 'conges' && role === 'coach') return <CoachLeavePanel user={user} requests={localLeaveRequests} onRequest={(request) => {
+    setLocalLeaveRequests((items) => [request, ...items]);
+    onInternalNotify?.('Demande de conge', `${user.name || user.email} demande un conge du ${request.start_date} au ${request.end_date}.`);
+  }} />;
   if (section === 'clients' && role === 'coach') return <CoachClientsPanel enrollments={enrollments} sessions={data.sessions} />;
   if (['bonus', 'inscriptions'].includes(section) && role === 'coach') return <CoachBonusPanel bonuses={[...localBonuses, ...(data.bonuses || [])]} enrollments={enrollments} sessions={data.sessions} />;
   if (['planning', 'calendrier'].includes(section)) return <Schedule sessions={data.sessions} role={role} user={user} coaches={data.coaches} onInternalNotify={onInternalNotify} onCoachBonus={addCoachBonus} onClientEnroll={(enrollment) => setLocalEnrollments((items) => [enrollment, ...items])} />;
-  if (section === 'demandes-coach' && role === 'responsable') return <CoachRequests initialCoaches={data.coaches} />;
+  if (section === 'demandes-coach' && role === 'responsable') return <CoachRequests initialCoaches={data.coaches} onInternalNotify={onInternalNotify} />;
   if (role === 'admin') return <AdminDashboard section={section} data={data} />;
   if (role === 'coach') return <CoachDashboard data={{ ...data, enrollments, bonuses: [...localBonuses, ...(data.bonuses || [])] }} />;
   if (role === 'responsable') return <ResponsableDashboard data={data} />;
@@ -902,6 +907,56 @@ function CoachBonusPanel({ bonuses = [], enrollments = [], sessions = [], compac
   );
 }
 
+function CoachLeavePanel({ user, requests = [], onRequest }) {
+  const [form, setForm] = useState({
+    start_date: '',
+    end_date: '',
+    reason: '',
+    type: 'repos',
+  });
+  const [notice, setNotice] = useState('');
+
+  const submitLeave = async (event) => {
+    event.preventDefault();
+    if (!form.start_date || !form.end_date) {
+      setNotice('Choisissez la date debut et fin du conge.');
+      return;
+    }
+    const request = {
+      ...form,
+      id: `leave-${Date.now()}`,
+      coach: user.name || user.email,
+      status: 'En attente',
+      created_at: new Date().toISOString(),
+    };
+    onRequest?.(request);
+    setNotice('Demande de conge envoyee au responsable.');
+    setForm({ start_date: '', end_date: '', reason: '', type: 'repos' });
+  };
+
+  const rows = requests.map((request) => [
+    `${request.start_date} -> ${request.end_date}`,
+    request.type,
+    request.status,
+  ]);
+
+  return (
+    <Panel title="Demande de conge">
+      <form className="leave-form" onSubmit={submitLeave}>
+        <div className="form-grid">
+          <label>Debut<input type="date" value={form.start_date} onChange={(e) => setForm({ ...form, start_date: e.target.value })} /></label>
+          <label>Fin<input type="date" value={form.end_date} onChange={(e) => setForm({ ...form, end_date: e.target.value })} /></label>
+          <label>Type<select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}><option value="repos">Repos</option><option value="maladie">Maladie</option><option value="urgence">Urgence</option><option value="vacances">Vacances</option></select></label>
+        </div>
+        <label>Motif<textarea value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} placeholder="Expliquez la demande..." /></label>
+        <button className="primary-action red">Envoyer demande</button>
+        {notice && <p className="form-status">{notice}</p>}
+      </form>
+      <Rows rows={rows} empty="Aucune demande de conge envoyee." />
+    </Panel>
+  );
+}
+
 function NotificationsPanel({ notifications = [] }) {
   const rows = notifications.map((item) => [
     item.title || item.subject || 'Notification interne',
@@ -931,9 +986,18 @@ function ResponsableDashboard({ data }) {
   );
 }
 
-function CoachRequests({ initialCoaches = [] }) {
+function CoachRequests({ initialCoaches = [], onInternalNotify }) {
   const [coaches, setCoaches] = useState(initialCoaches);
   const [notice, setNotice] = useState('');
+  const [newCoach, setNewCoach] = useState({
+    first_name: '',
+    last_name: '',
+    email: '',
+    phone: '',
+    specialty: 'musculation',
+    base_salary: 3000,
+  });
+  const [salaryDrafts, setSalaryDrafts] = useState({});
 
   const load = async () => {
     const { data } = await api.get('/coaches/');
@@ -955,11 +1019,91 @@ function CoachRequests({ initialCoaches = [] }) {
     }
   };
 
+  const addCoach = async (event) => {
+    event.preventDefault();
+    if (!newCoach.first_name || !newCoach.email) {
+      setNotice('Nom et email du coach obligatoires.');
+      return;
+    }
+    const coach = {
+      id: `local-coach-${Date.now()}`,
+      first_name: newCoach.first_name,
+      last_name: newCoach.last_name,
+      email: newCoach.email,
+      phone: newCoach.phone,
+      phone_number: newCoach.phone,
+      specialties: [newCoach.specialty],
+      base_salary: Number(newCoach.base_salary || 0),
+      approval_status: 'APPROVED',
+      status_label: 'Approuve',
+      created_at: new Date().toISOString(),
+      is_active: true,
+    };
+    try {
+      const { data } = await api.post('/auth/register-coach/', {
+        first_name: newCoach.first_name,
+        last_name: newCoach.last_name,
+        email: newCoach.email,
+        phone: newCoach.phone,
+        password: 'Coach@12345',
+        password_confirm: 'Coach@12345',
+        specialties: [newCoach.specialty],
+        base_salary: newCoach.base_salary,
+      });
+      setCoaches((items) => [{ ...coach, ...(data.coach || data.user || {}) }, ...items]);
+      setNotice('Coach ajoute. Mot de passe initial: Coach@12345');
+    } catch (error) {
+      setCoaches((items) => [coach, ...items]);
+      setNotice('Coach ajoute localement. Backend indisponible ou validation incomplete.');
+    }
+    onInternalNotify?.('Coach ajoute', `${newCoach.first_name} ${newCoach.last_name} ajoute par le responsable.`);
+    setNewCoach({ first_name: '', last_name: '', email: '', phone: '', specialty: 'musculation', base_salary: 3000 });
+  };
+
+  const removeCoach = async (coach) => {
+    setNotice(`Suppression de ${coach.first_name} ${coach.last_name}...`);
+    try {
+      await api.post(`/coaches/${coach.id}/delete/`, {});
+      setNotice('Coach supprime.');
+    } catch (error) {
+      setNotice('Coach supprime localement.');
+    }
+    setCoaches((items) => items.filter((item) => item.id !== coach.id));
+    onInternalNotify?.('Coach supprime', `${coach.first_name} ${coach.last_name} retire de l equipe.`);
+  };
+
+  const updateSalary = async (coach) => {
+    const amount = Number(salaryDrafts[coach.id] || coach.base_salary || coach.salary || 0);
+    if (!amount) {
+      setNotice('Saisissez un salaire valide.');
+      return;
+    }
+    try {
+      await api.post(`/coaches/${coach.id}/salary/`, { base_salary: amount });
+      setNotice('Salaire ajuste.');
+    } catch (error) {
+      setNotice('Salaire ajuste localement.');
+    }
+    setCoaches((items) => items.map((item) => item.id === coach.id ? { ...item, base_salary: amount } : item));
+    onInternalNotify?.('Salaire coach ajuste', `${coach.first_name} ${coach.last_name}: ${money(amount)}.`);
+  };
+
   return (
     <section className="panel premium-panel coach-requests">
-      <div className="panel-heading"><span>Demandes de Coach</span></div>
+      <div className="panel-heading"><span>Gestion des Coachs</span></div>
       <div className="panel-body">
         {notice && <p className="inline-status action-notice">{notice}</p>}
+        <form className="coach-management-form" onSubmit={addCoach}>
+          <div className="form-grid">
+            <label>Prenom<input value={newCoach.first_name} onChange={(e) => setNewCoach({ ...newCoach, first_name: e.target.value })} placeholder="Prenom" /></label>
+            <label>Nom<input value={newCoach.last_name} onChange={(e) => setNewCoach({ ...newCoach, last_name: e.target.value })} placeholder="Nom" /></label>
+            <label>Email<input value={newCoach.email} onChange={(e) => setNewCoach({ ...newCoach, email: e.target.value })} placeholder="coach@email.com" /></label>
+            <label>Telephone<input value={newCoach.phone} onChange={(e) => setNewCoach({ ...newCoach, phone: e.target.value })} placeholder="06..." /></label>
+            <label>Specialite<select value={newCoach.specialty} onChange={(e) => setNewCoach({ ...newCoach, specialty: e.target.value })}><option value="musculation">Musculation</option><option value="crossfit">CrossFit</option><option value="zumba">Zumba</option><option value="body_pump">Body Pump</option><option value="yoga">Yoga</option></select></label>
+            <label>Salaire<input type="number" value={newCoach.base_salary} onChange={(e) => setNewCoach({ ...newCoach, base_salary: e.target.value })} /></label>
+          </div>
+          <button className="primary-action red">Ajouter coach</button>
+        </form>
         <div className="table-scroll">
           <table className="table table-dark table-hover align-middle data-table coach-request-table">
             <thead>
@@ -967,6 +1111,7 @@ function CoachRequests({ initialCoaches = [] }) {
                 <th>Nom</th>
                 <th>Email</th>
                 <th>Telephone</th>
+                <th>Salaire</th>
                 <th>Date de demande</th>
                 <th>Statut</th>
                 <th>Actions</th>
@@ -978,6 +1123,12 @@ function CoachRequests({ initialCoaches = [] }) {
                   <td><strong>{coach.first_name} {coach.last_name}</strong><span>{(coach.specialties || []).join(', ') || 'Sans specialite'}</span></td>
                   <td>{coach.email}</td>
                   <td>{coach.phone_number || coach.phone || 'Non renseigne'}</td>
+                  <td>
+                    <div className="salary-adjust">
+                      <input type="number" value={salaryDrafts[coach.id] ?? coach.base_salary ?? coach.salary ?? 3000} onChange={(e) => setSalaryDrafts({ ...salaryDrafts, [coach.id]: e.target.value })} />
+                      <button type="button" onClick={() => updateSalary(coach)}>Ajuster</button>
+                    </div>
+                  </td>
                   <td>{new Date(coach.created_at).toLocaleDateString('fr-FR')}</td>
                   <td><span className={`status-badge status-${String(coach.approval_status || '').toLowerCase()}`}>{coach.status_label || coach.approval_status}</span></td>
                   <td>
@@ -985,12 +1136,13 @@ function CoachRequests({ initialCoaches = [] }) {
                       <button disabled={coach.approval_status === 'APPROVED'} onClick={() => decide(coach, 'approve')}>Approuver</button>
                       <button disabled={coach.approval_status === 'REJECTED'} onClick={() => decide(coach, 'reject')}>Rejeter</button>
                       <button onClick={() => setNotice(`${coach.first_name} ${coach.last_name} - ${coach.email} - ${coach.phone_number || coach.phone || 'Sans telephone'}`)}>Voir details</button>
+                      <button className="danger-action" onClick={() => removeCoach(coach)}>Supprimer</button>
                     </div>
                   </td>
                 </tr>
               ))}
               {!coaches.length && (
-                <tr><td colSpan="6">Aucune demande coach.</td></tr>
+                <tr><td colSpan="7">Aucune demande coach.</td></tr>
               )}
             </tbody>
           </table>
@@ -1784,6 +1936,7 @@ function labelFor(key) {
     offres: 'Offres',
     'coach-overview': 'Dashboard Coach',
     programmes: 'Programmes',
+    conges: 'Conges',
     bonus: 'Bonus',
     inscriptions: 'Inscriptions',
     chat: 'Chat interne',
